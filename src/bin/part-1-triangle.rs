@@ -235,6 +235,46 @@ fn main() {
         }
     };
 
+    let framebuffer = {
+        use gfx_hal::window::SwapchainConfig;
+
+        let caps = surface.capabilities(&adapter.physical_device);
+
+        // We pass our `surface_extent` as a desired default, but
+        // it may return us a different value, depending on what it
+        // supports.
+        let mut swapchain_config =
+            SwapchainConfig::from_caps(&caps, surface_color_format, surface_extent);
+
+        // If our device supports having 3 images in our swapchain,
+        // then we want to use that.
+        //
+        // This seems to fix some fullscreen slowdown on macOS.
+        if caps.image_count.contains(&3) {
+            swapchain_config.image_count = 3;
+        }
+
+        // In case the surface returned an extent different from
+        // the size we requested, we update our value.
+        surface_extent = swapchain_config.extent;
+
+        use gfx_hal::image::Extent;
+
+        unsafe {
+            device
+                .create_framebuffer(
+                    &render_pass,
+                    iter::once(swapchain_config.framebuffer_attachment()),
+                    Extent {
+                        width: surface_extent.width,
+                        height: surface_extent.height,
+                        depth: 1,
+                    },
+                )
+                .unwrap()
+        }
+    };
+
     let pipeline_layout = unsafe {
         device
             .create_pipeline_layout(iter::empty(), iter::empty())
@@ -404,6 +444,7 @@ fn main() {
         command_pool: B::CommandPool,
         submission_complete_fence: B::Fence,
         rendering_complete_semaphore: B::Semaphore,
+        framebuffer: B::Framebuffer,
     }
 
     // We put the resources in an `ManuallyDrop` so that we can `take` the
@@ -424,9 +465,11 @@ fn main() {
                     pipelines,
                     submission_complete_fence,
                     rendering_complete_semaphore,
+                    framebuffer,
                 } = ManuallyDrop::take(&mut self.0);
 
                 // ... and destroying them individually:
+                device.destroy_framebuffer(framebuffer);
                 device.destroy_semaphore(rendering_complete_semaphore);
                 device.destroy_fence(submission_complete_fence);
                 for pipeline in pipelines {
@@ -456,6 +499,7 @@ fn main() {
             pipelines: vec![pipeline],
             submission_complete_fence,
             rendering_complete_semaphore,
+            framebuffer,
         }));
 
     // This will be very important later! It must be initialized to `true` so
@@ -571,6 +615,25 @@ fn main() {
                     // the size we requested, we update our value.
                     surface_extent = swapchain_config.extent;
 
+                    use gfx_hal::image::Extent;
+
+                    unsafe {
+                        let mut new_framebuffer = res
+                            .device
+                            .create_framebuffer(
+                                render_pass,
+                                iter::once(swapchain_config.framebuffer_attachment()),
+                                Extent {
+                                    width: surface_extent.width,
+                                    height: surface_extent.height,
+                                    depth: 1,
+                                },
+                            )
+                            .unwrap();
+                        std::mem::swap(&mut new_framebuffer, &mut res.framebuffer);
+                        res.device.destroy_framebuffer(new_framebuffer);
+                    }
+
                     unsafe {
                         res.surface
                             .configure_swapchain(&res.device, swapchain_config)
@@ -598,36 +661,6 @@ fn main() {
                             return;
                         }
                     }
-                };
-
-                // The Vulkan API, which `gfx` is based on, doesn't allow you
-                // to render directly to images. Instead, you render to an
-                // abstract framebuffer which represents your render target.
-                // In practice, there may be no difference in our case, but
-                // it's somthing to be aware of.
-                let framebuffer = unsafe {
-                    use gfx_hal::window::SwapchainConfig;
-
-                    use gfx_hal::image::Extent;
-
-                    let caps = res.surface.capabilities(&adapter.physical_device);
-                    let mut swapchain_config =
-                        SwapchainConfig::from_caps(&caps, surface_color_format, surface_extent);
-                    if caps.image_count.contains(&3) {
-                        swapchain_config.image_count = 3;
-                    }
-
-                    res.device
-                        .create_framebuffer(
-                            render_pass,
-                            iter::once(swapchain_config.framebuffer_attachment()),
-                            Extent {
-                                width: surface_extent.width,
-                                height: surface_extent.height,
-                                depth: 1,
-                            },
-                        )
-                        .unwrap()
                 };
 
                 // A viewport defines the rectangular section of the screen
@@ -681,7 +714,7 @@ fn main() {
                     // they have been configured to be cleared.
                     command_buffer.begin_render_pass(
                         render_pass,
-                        &framebuffer,
+                        &res.framebuffer,
                         viewport.rect,
                         iter::once(attachment),
                         SubpassContents::Inline,
@@ -744,10 +777,6 @@ fn main() {
                     // In the hopes that we can avoid the same error next
                     // frame, we'll rebuild the swapchain.
                     should_configure_swapchain |= result.is_err();
-
-                    // We created this at the start of the frame
-                    // so we should destroy it too to avoid leaking it.
-                    res.device.destroy_framebuffer(framebuffer);
                 }
             }
             _ => (),
