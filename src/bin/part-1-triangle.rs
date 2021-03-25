@@ -1,6 +1,6 @@
 use std::{borrow::Borrow, iter};
 
-use gfx_hal::command::RenderAttachmentInfo;
+use gfx_hal::{command::RenderAttachmentInfo, prelude::Queue};
 
 fn main() {
     use std::mem::ManuallyDrop;
@@ -88,7 +88,7 @@ fn main() {
         // We also of course need one that our surface supports.
         let queue_family = adapter
             .queue_families
-            .iter()
+            .iter() 
             .find(|family| {
                 surface.supports_queue_family(family) && family.queue_type().supports_graphics()
             })
@@ -743,8 +743,6 @@ fn main() {
                 }
 
                 unsafe {
-                    use gfx_hal::queue::CommandQueue;
-
                     // Commands must be submitted to an appropriate queue. We
                     // requested a graphics queue, and so we are submitting
                     // graphics commands.
